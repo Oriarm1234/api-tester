@@ -1080,6 +1080,28 @@ def write_reports(out: Path, tests: list[Test], meta: dict) -> dict:
 # --------------------------------------------------------------------------
 # Main
 # --------------------------------------------------------------------------
+def bridge_busy_hint() -> str:
+    """McpBridge keeps its pipe connection open for its whole lifetime and, when
+    Aspire reports the pipe busy, waits up to 390s rather than failing. A connect
+    timeout therefore usually means another client (Claude Desktop's own bridge)
+    already holds the pipe."""
+    hint = ("Hint: McpBridge waits silently while Aspire's pipe is busy. If Claude Desktop "
+            "(or another MCP client) is connected to Aspire, quit it fully (tray icon too) "
+            "or disable its Aspire server, then retry. Also check Aspire is open with no "
+            "dialog showing.")
+    if os.name != "nt":
+        return hint
+    try:
+        out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq McpBridge.exe", "/FO", "CSV", "/NH"],
+                             capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return hint
+    pids = [line.split('","')[1] for line in out.splitlines() if line.startswith('"McpBridge.exe"')]
+    if pids:
+        hint += f"\n      McpBridge.exe already running (PID {', '.join(pids)}) - likely holding the pipe."
+    return hint
+
+
 def default_config() -> str | None:
     appdata = os.environ.get("APPDATA")
     candidates = []
@@ -1143,6 +1165,8 @@ def main(argv: list[str] | None = None) -> int:
         tools = {tl["name"]: tl for tl in insp.list_tools()}
     except InspectorError as e:
         print(f"Could not list tools: {e}")
+        if "timed out" in str(e).lower():
+            print(bridge_busy_hint())
         return 2
     need = {"run_lua_script", "get_lua_api", "search_lua_api", "define_lua_library"}
     if need - tools.keys():

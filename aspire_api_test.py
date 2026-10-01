@@ -311,6 +311,11 @@ class Inspector:
                 self.target += ["--config", args.config]
             if args.server:
                 self.target += ["--server", args.server]
+        # Inspector 2.x gives up connecting after 30s by default; Aspire can take
+        # longer to answer initialize (busy, modal dialog, still starting).
+        self.opts = []
+        if args.connect_timeout > 0:
+            self.opts += ["--connect-timeout", str(int(args.connect_timeout * 1000))]
         self.calls = 0
 
     def base_cmd(self, method: str) -> list[str]:
@@ -319,6 +324,7 @@ class Inspector:
             cmd += self.target  # a raw command goes first, options follow
         else:
             cmd += self.target
+        cmd += self.opts
         cmd += ["--method", method]
         return cmd
 
@@ -1074,6 +1080,28 @@ def write_reports(out: Path, tests: list[Test], meta: dict) -> dict:
 # --------------------------------------------------------------------------
 # Main
 # --------------------------------------------------------------------------
+def bridge_busy_hint() -> str:
+    """McpBridge keeps its pipe connection open for its whole lifetime and, when
+    Aspire reports the pipe busy, waits up to 390s rather than failing. A connect
+    timeout therefore usually means another client (Claude Desktop's own bridge)
+    already holds the pipe."""
+    hint = ("Hint: McpBridge waits silently while Aspire's pipe is busy. If Claude Desktop "
+            "(or another MCP client) is connected to Aspire, quit it fully (tray icon too) "
+            "or disable its Aspire server, then retry. Also check Aspire is open with no "
+            "dialog showing.")
+    if os.name != "nt":
+        return hint
+    try:
+        out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq McpBridge.exe", "/FO", "CSV", "/NH"],
+                             capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return hint
+    pids = [line.split('","')[1] for line in out.splitlines() if line.startswith('"McpBridge.exe"')]
+    if pids:
+        hint += f"\n      McpBridge.exe already running (PID {', '.join(pids)}) - likely holding the pipe."
+    return hint
+
+
 def default_config() -> str | None:
     appdata = os.environ.get("APPDATA")
     candidates = []
@@ -1099,6 +1127,9 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--inspector-cmd", default=None,
                    help="full inspector command prefix, e.g. 'node C:/.../cli.js' (bypasses npx/cmd.exe)")
     g.add_argument("--timeout", type=float, default=120, help="seconds per discovery call")
+    g.add_argument("--connect-timeout", type=float, default=120,
+                   help="seconds the inspector waits to connect/initialize (0 = don't pass; "
+                        "needed for inspector < 2.x, which lacks --connect-timeout)")
     g.add_argument("--lua-timeout", type=float, default=420, help="seconds per run_lua_script call")
     t = ap.add_argument_group("test selection")
     t.add_argument("--only", default=None, help="comma list of classes/functions; '(global)' = all globals")
@@ -1134,6 +1165,8 @@ def main(argv: list[str] | None = None) -> int:
         tools = {tl["name"]: tl for tl in insp.list_tools()}
     except InspectorError as e:
         print(f"Could not list tools: {e}")
+        if "timed out" in str(e).lower():
+            print(bridge_busy_hint())
         return 2
     need = {"run_lua_script", "get_lua_api", "search_lua_api", "define_lua_library"}
     if need - tools.keys():

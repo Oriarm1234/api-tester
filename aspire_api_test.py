@@ -311,6 +311,11 @@ class Inspector:
                 self.target += ["--config", args.config]
             if args.server:
                 self.target += ["--server", args.server]
+        # Inspector 2.x gives up connecting after 30s by default; Aspire can take
+        # longer to answer initialize (busy, modal dialog, still starting).
+        self.opts = []
+        if args.connect_timeout > 0:
+            self.opts += ["--connect-timeout", str(int(args.connect_timeout * 1000))]
         self.calls = 0
 
     def base_cmd(self, method: str) -> list[str]:
@@ -319,6 +324,7 @@ class Inspector:
             cmd += self.target  # a raw command goes first, options follow
         else:
             cmd += self.target
+        cmd += self.opts
         cmd += ["--method", method]
         return cmd
 
@@ -1099,6 +1105,9 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--inspector-cmd", default=None,
                    help="full inspector command prefix, e.g. 'node C:/.../cli.js' (bypasses npx/cmd.exe)")
     g.add_argument("--timeout", type=float, default=120, help="seconds per discovery call")
+    g.add_argument("--connect-timeout", type=float, default=120,
+                   help="seconds the inspector waits to connect/initialize (0 = don't pass; "
+                        "needed for inspector < 2.x, which lacks --connect-timeout)")
     g.add_argument("--lua-timeout", type=float, default=420, help="seconds per run_lua_script call")
     t = ap.add_argument_group("test selection")
     t.add_argument("--only", default=None, help="comma list of classes/functions; '(global)' = all globals")
